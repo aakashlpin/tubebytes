@@ -19,7 +19,7 @@ const port = 80;
 
 app.get("/", (req, res) =>
   res.send(
-    "<html><head><meta name='trafficjunky-site-verification' content='r65sxq62t' /></head><body>Hello World!</body>></html>"
+    '<html><head><meta name="trafficjunky-site-verification" content="r65sxq62t" /></head><body>Hello World!</body></html>'
   )
 );
 
