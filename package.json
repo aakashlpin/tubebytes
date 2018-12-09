@@ -4,9 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "deploy": "npx shipit production deploy start"
   },
-  "author": "",
+  "author": "Aakash Goel",
   "license": "ISC",
   "dependencies": {
     "aws-sdk": "^2.373.0",

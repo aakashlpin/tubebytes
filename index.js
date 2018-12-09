@@ -5,6 +5,7 @@ const bodyParser = require("body-parser");
 const youtubedl = require("youtube-dl");
 const ffmpeg = require("fluent-ffmpeg");
 const AWS = require("aws-sdk");
+const readline = require("readline");
 
 const s3 = new AWS.S3();
 const app = express();
@@ -70,8 +71,8 @@ app.post("/api/v1/slice", (req, res) => {
   let amount = 0;
   video.on("data", function data(chunk) {
     amount += chunk.length;
-    process.stdout.cursorTo(0);
-    process.stdout.clearLine(1);
+    readline.cursorTo(0);
+    readLine.clearLine(1);
     process.stdout.write(
       `${parseInt((1 - (videoSize - amount) / videoSize) * 100, 10)}%`
     );
@@ -87,8 +88,8 @@ app.post("/api/v1/slice", (req, res) => {
       .save(slicedVideo)
       .on("error", console.error)
       .on("progress", progress => {
-        process.stdout.cursorTo(0);
-        process.stdout.clearLine(1);
+        readline.cursorTo(0);
+        readLine.clearLine(1);
         process.stdout.write(progress.timemark);
       })
       .on("end", () => {
