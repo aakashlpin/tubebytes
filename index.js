@@ -71,10 +71,12 @@ app.post("/api/v1/slice", (req, res) => {
   let amount = 0;
   video.on("data", function data(chunk) {
     amount += chunk.length;
-    readline.cursorTo(0);
-    readline.clearLine(1);
+    readline.cursorTo(process.stdout, 0);
     process.stdout.write(
-      `${parseInt((1 - (videoSize - amount) / videoSize) * 100, 10)}%`
+      `downloading.... ${parseInt(
+        (1 - (videoSize - amount) / videoSize) * 100,
+        10
+      )}%`
     );
   });
 
@@ -88,9 +90,8 @@ app.post("/api/v1/slice", (req, res) => {
       .save(slicedVideo)
       .on("error", console.error)
       .on("progress", progress => {
-        readline.cursorTo(0);
-        readline.clearLine(1);
-        process.stdout.write(progress.timemark);
+        readline.cursorTo(process.stdout, 0);
+        process.stdout.write(`slicing....${progress.timemark}`);
       })
       .on("end", () => {
         console.log(">>>> Finished slicing! Now uploading to S3 <<<<");
