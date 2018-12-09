@@ -72,7 +72,7 @@ app.post("/api/v1/slice", (req, res) => {
   video.on("data", function data(chunk) {
     amount += chunk.length;
     readline.cursorTo(0);
-    readLine.clearLine(1);
+    readline.clearLine(1);
     process.stdout.write(
       `${parseInt((1 - (videoSize - amount) / videoSize) * 100, 10)}%`
     );
@@ -89,7 +89,7 @@ app.post("/api/v1/slice", (req, res) => {
       .on("error", console.error)
       .on("progress", progress => {
         readline.cursorTo(0);
-        readLine.clearLine(1);
+        readline.clearLine(1);
         process.stdout.write(progress.timemark);
       })
       .on("end", () => {
