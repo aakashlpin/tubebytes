@@ -17,14 +17,18 @@ app.use(bodyParser.json());
 
 const port = 80;
 
-app.get("/", (req, res) => res.send("Hello World!"));
+app.get("/", (req, res) =>
+  res.send(
+    "<html><head><meta name='trafficjunky-site-verification' content='r65sxq62t' /></head><body>Hello World!</body>></html>"
+  )
+);
 
 app.post("/api/v1/slice", (req, res) => {
   console.log(req.body);
   const { url, slice_at, video_length } = req.body;
   // TODO: handle for when `video_length` is not enough to have a split_for of 1min.
   const formattedSliceAt =
-    slice_at.split(":").length === 1 ? `00:${slice_at}` : slice_at;
+    slice_at.split(":").length === 2 ? `00:${slice_at}` : slice_at;
   const slice_for = "00:01:00";
   const slidedVideoKey = url.split("viewkey=")[1];
   const sliceVideoFilename = `${slidedVideoKey}_${formattedSliceAt}_${slice_for}.mp4`;
