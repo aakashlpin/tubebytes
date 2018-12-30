@@ -6,7 +6,6 @@ const youtubedl = require("youtube-dl");
 const ffmpeg = require("fluent-ffmpeg");
 const AWS = require("aws-sdk");
 const readline = require("readline");
-const cors = require("cors");
 
 const s3 = new AWS.S3();
 const app = express();
@@ -15,7 +14,6 @@ app.use(bodyParser.urlencoded({ extended: false }));
 
 // parse application/json
 app.use(bodyParser.json());
-app.use(cors());
 
 const port = 80;
 
@@ -35,16 +33,69 @@ app.post("/api/v1/slice", (req, res) => {
   const slidedVideoKey = url.split("viewkey=")[1];
   const sliceVideoFilename = `${slidedVideoKey}_${formattedSliceAt}_${slice_for}.mp4`;
   const slicedVideo = path.resolve(__dirname, "media", sliceVideoFilename);
+  const downloadedVideo = path.resolve(
+    __dirname,
+    "original",
+    `${slidedVideoKey}.mp4`
+  );
 
-  youtubedl.getInfo(url, ["--format=best"], function(err, info) {
-    if (err) throw err;
-    ffmpeg(info.url)
+  let downloaded = 0;
+  if (fs.existsSync(downloadedVideo)) {
+    downloaded = fs.statSync(downloadedVideo).size;
+  }
+
+  const video = youtubedl(url, ["--format=best"]);
+
+  let videoSize;
+  video.on("info", function(info) {
+    console.log("Download started");
+    console.log("filename: " + info._filename);
+
+    // info.size will be the amount to download, add
+    videoSize = info.size + downloaded;
+    console.log("size: " + videoSize);
+
+    if (downloaded > 0) {
+      // size will be the amount already downloaded
+      console.log("resuming from: " + downloaded);
+
+      // display the remaining bytes to download
+      console.log("remaining bytes: " + info.size);
+    }
+  });
+
+  video.pipe(fs.createWriteStream(downloadedVideo, { flags: "a" }));
+
+  // Will be called if download was already completed and there is nothing more to download.
+  video.on("complete", function complete(info) {
+    "use strict";
+    console.log("filename: " + info._filename + " already downloaded.");
+  });
+
+  let amount = 0;
+  video.on("data", function data(chunk) {
+    amount += chunk.length;
+    readline.cursorTo(process.stdout, 0);
+    process.stdout.write(
+      `downloading.... ${parseInt(
+        (1 - (videoSize - amount) / videoSize) * 100,
+        10
+      )}%`
+    );
+  });
+
+  video.on("end", function() {
+    console.log(
+      `>>>> Finished downloading! Now slicing it up from ${formattedSliceAt} <<<<`
+    );
+
+    ffmpeg(downloadedVideo)
       .inputOptions([`-ss ${formattedSliceAt}`, `-t ${slice_for}`])
       .save(slicedVideo)
       .on("error", console.error)
       .on("progress", progress => {
         readline.cursorTo(process.stdout, 0);
-        process.stdout.write(`slicing.... ${progress.timemark}`);
+        process.stdout.write(`slicing....${progress.timemark}`);
       })
       .on("end", () => {
         console.log(">>>> Finished slicing! Now uploading to S3 <<<<");
@@ -72,7 +123,7 @@ app.post("/api/v1/slice", (req, res) => {
       });
   });
 
-  res.json("Hello World!");
+  res.send("Hello World!");
 });
 
 app.listen(port, () => console.log(`Tubebyt.es app ready on port ${port}!`));
