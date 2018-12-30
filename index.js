@@ -9,9 +9,15 @@ const AWS = require("aws-sdk");
 const readline = require("readline");
 const cors = require("cors");
 const moment = require("moment");
+const kue = require("kue");
+const cluster = require("cluster");
 
+const queue = kue.createQueue();
+const clusterWorkerSize = require("os").cpus().length;
 const s3 = new AWS.S3();
 const app = express();
+
+const SLICE_REQUEST_QUEUE = "slice request";
 
 app.use(bodyParser.urlencoded({ extended: false }));
 
@@ -49,68 +55,96 @@ app.post("/api/v1/slice", (req, res) => {
   /**
    * <t-xseconds of slice_at time, t+yseconds>
    */
-  const userSelectedTime =
-    slice_at.split(":").length === 2 ? `00:${slice_at}` : slice_at;
 
-  const startAt = moment(userSelectedTime, "HH:mm:ss")
-    .subtract(30, "seconds")
-    .format("HH:mm:ss");
-
-  const duration = "00:01:00";
-  const { hostname } = urlParser.parse(url);
-
-  youtubedl.getInfo(url, ["--format=best"], function(err, info) {
-    if (err) throw err;
-
-    const sliceVideoFilename = `${info.title.replace(
-      /[^A-Z0-9]+/gi,
-      "_"
-    )}_${startAt}_${duration}.mp4`;
-
-    console.log(`\n---Starting up ${sliceVideoFilename}---`);
-
-    const slicedVideoPath = path.resolve(
-      __dirname,
-      "media",
-      sliceVideoFilename
-    );
-
-    ffmpeg(info.url)
-      .inputOptions([`-ss ${startAt}`, `-t ${duration}`])
-      .save(slicedVideoPath)
-      .on("error", console.error)
-      .on("progress", progress => {
-        console.log("\nProcessing! Please wait... 🔪");
-        readline.cursorTo(process.stdout, 0);
-        process.stdout.write(progress.timemark);
-      })
-      .on("end", () => {
-        console.log("\nSending it to the clouds! Please wait... ☁️");
-
-        s3.putObject(
-          {
-            Body: fs.createReadStream(slicedVideoPath),
-            Bucket: "onehandapp-downloader",
-            Key: `${hostname}/${sliceVideoFilename}`,
-            ContentDisposition: `inline; filename="${sliceVideoFilename.replace(
-              '"',
-              "'"
-            )}"`,
-            ContentType: "video/mp4"
-          },
-          error => {
-            if (error) {
-              revoke(error);
-            }
-            console.log("\nSent! 🎉");
-            fs.unlinkSync(slicedVideoPath);
-            console.log("\nCleaned up! 🗑");
-          }
-        );
-      });
-  });
+  const job = queue
+    .create(SLICE_REQUEST_QUEUE, {
+      title: `slice up ${url} starting ${slice_at} (duration: ${video_length})`,
+      url,
+      slice_at,
+      video_length
+    })
+    .save(function(err) {
+      if (!err) console.log(job.id);
+    });
 
   res.json("Hello World!");
 });
 
-app.listen(port, () => console.log(`Klipply ready on port ${port}!`));
+if (cluster.isMaster) {
+  kue.app.listen(3001);
+  for (let i = 0; i < clusterWorkerSize; i++) {
+    cluster.fork();
+  }
+  app.listen(port, () => console.log(`Klipply ready on port ${port}!`));
+} else {
+  queue.process(SLICE_REQUEST_QUEUE, (job, done) => {
+    const { url, slice_at } = job.data;
+
+    const userSelectedTime =
+      slice_at.split(":").length === 2 ? `00:${slice_at}` : slice_at;
+
+    const startAt = moment(userSelectedTime, "HH:mm:ss")
+      .subtract(30, "seconds")
+      .format("HH:mm:ss");
+
+    const duration = "00:01:00";
+    const { hostname } = urlParser.parse(url);
+
+    youtubedl.getInfo(url, ["--format=best"], function(err, info) {
+      if (err) throw err;
+
+      const sliceVideoFilename = `${info.title.replace(
+        /[^A-Z0-9]+/gi,
+        "_"
+      )}_${startAt}_${duration}.mp4`;
+
+      console.log(`\n---Starting up ${sliceVideoFilename}---`);
+
+      const slicedVideoPath = path.resolve(
+        __dirname,
+        "media",
+        sliceVideoFilename
+      );
+
+      ffmpeg(info.url)
+        .inputOptions([`-ss ${startAt}`, `-t ${duration}`])
+        .save(slicedVideoPath)
+        .on("error", console.error)
+        .on("progress", progress => {
+          readline.cursorTo(process.stdout, 0);
+          process.stdout.write(progress.timemark);
+        })
+        .on("end", () => {
+          console.log("\nSending it to the clouds! Please wait... ☁️");
+
+          s3.putObject(
+            {
+              Body: fs.createReadStream(slicedVideoPath),
+              Bucket: "onehandapp-downloader",
+              Key: `${hostname}/${sliceVideoFilename}`,
+              ContentDisposition: `inline; filename="${sliceVideoFilename.replace(
+                '"',
+                "'"
+              )}"`,
+              ContentType: "video/mp4"
+            },
+            error => {
+              if (error) {
+                revoke(error);
+                done(new Error(error));
+              }
+              console.log("\nSent! 🎉");
+              fs.unlinkSync(slicedVideoPath);
+              console.log("\nCleaned up! 🗑");
+
+              done();
+            }
+          );
+        });
+    });
+  });
+}
+
+queue.on("error", function(err) {
+  console.log("kue error", err);
+});
