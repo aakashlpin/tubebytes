@@ -67,6 +67,8 @@ app.post("/api/v1/slice", (req, res) => {
       "_"
     )}_${startAt}_${duration}.mp4`;
 
+    console.log(`\n---Starting up ${sliceVideoFilename}---`);
+
     const slicedVideoPath = path.resolve(
       __dirname,
       "media",
@@ -78,11 +80,12 @@ app.post("/api/v1/slice", (req, res) => {
       .save(slicedVideoPath)
       .on("error", console.error)
       .on("progress", progress => {
+        console.log("\nProcessing! Please wait... 🔪");
         readline.cursorTo(process.stdout, 0);
-        process.stdout.write(`🔪\rSlicing! Please wait...`);
+        process.stdout.write(progress.timemark);
       })
       .on("end", () => {
-        console.log("☁️\rSending it in the clouds! Please wait...");
+        console.log("\nSending it to the clouds! Please wait... ☁️");
 
         s3.putObject(
           {
@@ -99,9 +102,9 @@ app.post("/api/v1/slice", (req, res) => {
             if (error) {
               revoke(error);
             }
-            console.log("🎉\rSent!");
+            console.log("\nSent! 🎉");
             fs.unlinkSync(slicedVideoPath);
-            console.log("🗑\rDeleted local file");
+            console.log("\nCleaned up! 🗑");
           }
         );
       });
