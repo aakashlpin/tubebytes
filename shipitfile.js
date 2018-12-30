@@ -4,7 +4,7 @@ module.exports = shipit => {
 
   shipit.initConfig({
     default: {
-      deployTo: "/var/apps/tubebytes",
+      deployTo: "/var/apps/klipply",
       repositoryUrl: "https://github.com/aakashlpin/tubebytes.git"
     },
     production: {
@@ -19,7 +19,7 @@ module.exports = shipit => {
     );
     await shipit.copyToRemote("/Users/aakash/.aws/config", "/root/.aws/config");
     await shipit.remote(
-      "cd /var/apps/tubebytes/current/ && yarn && mkdir media && mkdir original && forever stopall && NODE_ENV=production forever start index.js"
+      "cd /var/apps/klipply/current/ && yarn && mkdir media && mkdir original && forever stopall && NODE_ENV=production forever start index.js"
     );
   });
 };

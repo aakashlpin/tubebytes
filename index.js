@@ -1,4 +1,5 @@
 const fs = require("fs");
+const urlParser = require("url");
 const path = require("path");
 const express = require("express");
 const bodyParser = require("body-parser");
@@ -7,6 +8,7 @@ const ffmpeg = require("fluent-ffmpeg");
 const AWS = require("aws-sdk");
 const readline = require("readline");
 const cors = require("cors");
+const moment = require("moment");
 
 const s3 = new AWS.S3();
 const app = express();
@@ -26,36 +28,50 @@ app.get("/", (req, res) =>
 );
 
 app.post("/api/v1/slice", (req, res) => {
-  console.log(req.body);
   const { url, slice_at, video_length } = req.body;
-  // TODO: handle for when `video_length` is not enough to have a split_for of 1min.
-  const formattedSliceAt =
+  /**
+   * <t-xseconds of slice_at time, t+yseconds>
+   */
+  const userSelectedTime =
     slice_at.split(":").length === 2 ? `00:${slice_at}` : slice_at;
-  const slice_for = "00:01:00";
-  const slidedVideoKey = url.split("viewkey=")[1];
-  const sliceVideoFilename = `${slidedVideoKey}_${formattedSliceAt}_${slice_for}.mp4`;
-  const slicedVideo = path.resolve(__dirname, "media", sliceVideoFilename);
+
+  const startAt = moment(userSelectedTime, "HH:mm:ss")
+    .subtract(30, "seconds")
+    .format("HH:mm:ss");
+
+  const duration = "00:01:00";
+  const { hostname } = urlParser.parse(url);
 
   youtubedl.getInfo(url, ["--format=best"], function(err, info) {
     if (err) throw err;
+
+    const sliceVideoFilename = `${info.title.replace(
+      /[^A-Z0-9]+/gi,
+      "_"
+    )}_${startAt}_${duration}.mp4`;
+
+    const slicedVideoPath = path.resolve(
+      __dirname,
+      "media",
+      sliceVideoFilename
+    );
+
     ffmpeg(info.url)
-      .inputOptions([`-ss ${formattedSliceAt}`, `-t ${slice_for}`])
-      .save(slicedVideo)
+      .inputOptions([`-ss ${startAt}`, `-t ${duration}`])
+      .save(slicedVideoPath)
       .on("error", console.error)
       .on("progress", progress => {
         readline.cursorTo(process.stdout, 0);
-        process.stdout.write(`slicing.... ${progress.timemark}`);
+        process.stdout.write(`🔪Slicing... ${progress.timemark}`);
       })
       .on("end", () => {
-        console.log(">>>> Finished slicing! Now uploading to S3 <<<<");
-
-        const s3Bucket = "onehandapp-downloader";
+        console.log("☁️Sending it in the clouds! Please wait...");
 
         s3.putObject(
           {
-            Body: fs.createReadStream(slicedVideo),
-            Bucket: s3Bucket,
-            Key: sliceVideoFilename,
+            Body: fs.createReadStream(slicedVideoPath),
+            Bucket: "onehandapp-downloader",
+            Key: `${hostname}/${sliceVideoFilename}`,
             ContentDisposition: `inline; filename="${sliceVideoFilename.replace(
               '"',
               "'"
@@ -66,7 +82,9 @@ app.post("/api/v1/slice", (req, res) => {
             if (error) {
               revoke(error);
             }
-            console.log("Uploaded to S3!");
+            console.log("🎉Sent!");
+            fs.unlinkSync(slicedVideoPath);
+            console.log("🗑Deleted local file");
           }
         );
       });
@@ -75,4 +93,4 @@ app.post("/api/v1/slice", (req, res) => {
   res.json("Hello World!");
 });
 
-app.listen(port, () => console.log(`Tubebyt.es app ready on port ${port}!`));
+app.listen(port, () => console.log(`Klipply ready on port ${port}!`));
