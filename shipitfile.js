@@ -18,8 +18,12 @@ module.exports = shipit => {
       "/root/.aws/credentials"
     );
     await shipit.copyToRemote("/Users/aakash/.aws/config", "/root/.aws/config");
+    await shipit.copyToRemote(
+      "./klipply-service-account.json",
+      "/var/apps/klipply/current/"
+    );
     await shipit.remote(
-      "cd /var/apps/klipply/current/ && yarn && mkdir media && mkdir original && forever stopall && NODE_ENV=production forever start index.js"
+      "cd /var/apps/klipply/current/ && yarn && mkdir media && forever stopall && NODE_ENV=production forever start index.js"
     );
   });
 };
