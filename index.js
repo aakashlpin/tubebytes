@@ -28,13 +28,22 @@ const firestore = new Firestore({
 
 const KLIPP_STATUS = {
   UPLOADED: 0,
-  USER_PROCESSED: 1,
-  MODERATOR_PROCESSED: 2,
-  MODERATOR_APPROVED: 3,
-  ACTIVE: 4
+  MODERATED: 1
+  // USER_PROCESSED: 1,
+  // MODERATOR_PROCESSED: 2,
+  // MODERATOR_APPROVED: 3,
+  // ACTIVE: 4
+};
+
+const MODERATED_KLIPP_STATUS = {
+  PENDING: 0,
+  APPROVED: 1,
+  REJECTED: 2,
+  LIVE: 3
 };
 
 const SLICE_REQUEST_QUEUE = "slice request";
+const MODERATION_QUEUE = "klipp moderation";
 
 const hash = url => md5(url);
 
@@ -50,24 +59,82 @@ app.get("/", (req, res) =>
   res.send("<html><head></head><body>Hello World!</body></html>")
 );
 
-const getPresignedUrl = s3Key => {
+const getPresignedUrl = props => {
   return new Promise((resolve, reject) => {
     s3.getSignedUrl(
       "getObject",
       {
         Bucket: s3Bucket,
         Expires: 3600,
-        Key: s3Key
+        Key: props.s3Key
       },
       (error, url) => {
         if (error) {
           reject(error);
         }
-        resolve(url);
+        resolve({
+          url,
+          ...props
+        });
       }
     );
   });
 };
+
+app.get("/api/v1/admin/klipps/pending_moderation", (req, res) => {
+  firestore
+    .collection("klipps")
+    .where("status", "==", 0)
+    .get()
+    .then(querySnapshot => {
+      const data = [];
+      querySnapshot.forEach(doc => {
+        console.log(doc.id, " => ", doc.data());
+        const {
+          source_domain,
+          s3_key,
+          youtube_dl_info: {
+            fulltitle,
+            thumbnail,
+            title,
+            webpage_url,
+            view_count,
+            upload_date,
+            quality,
+            like_count,
+            format,
+            format_id,
+            format_note
+          }
+        } = doc.data();
+
+        data.push({
+          source_domain,
+          fulltitle,
+          thumbnail,
+          title,
+          webpage_url,
+          view_count,
+          upload_date,
+          quality,
+          like_count,
+          format,
+          format_id,
+          format_note,
+          s3Key: s3_key
+        });
+      });
+
+      Promise.all(data.map(item => getPresignedUrl(item))).then(responses => {
+        res.json({
+          klipps: responses.map(response => response)
+        });
+      });
+    })
+    .catch(e => {
+      console.log("Error getting documents: ", error);
+    });
+});
 
 app.get("/api/v1/slices", (req, res) => {
   firestore
@@ -80,11 +147,46 @@ app.get("/api/v1/slices", (req, res) => {
         s3Keys.push(data.s3_key);
       });
 
-      Promise.all(s3Keys.map(getPresignedUrl)).then(responses => {
-        res.json({
-          videos: responses.map(response => response)
+      Promise.all(s3Keys.map(s3Key => getPresignedUrl({ s3Key }))).then(
+        responses => {
+          res.json({
+            videos: responses.map(response => response)
+          });
+        }
+      );
+    });
+});
+
+app.post("/api/v1/admin/slice", (req, res) => {
+  const { url, slice_start, slice_end } = req.body;
+
+  firestore
+    .collection("moderated_klipps")
+    .doc(hash(url))
+    .set({})
+    .then(docRef => {
+      const job = queue
+        .create(MODERATION_QUEUE, {
+          title: `admin: slice up ${url} starting ${slice_start} ending ${slice_end}`,
+          docRefId: docRef.id,
+          url,
+          slice_start,
+          slice_end
+        })
+        .save(function(err) {
+          if (!err) {
+            console.log(`Job #${job.id} added in ${MODERATION_QUEUE}`);
+            res.json({ message: "Successfully added url", ackId: docRef.id });
+          } else {
+            res.status(500).json({
+              message: "Something went wrong in adding to queue",
+              error: err
+            });
+          }
         });
-      });
+    })
+    .catch(e => {
+      res.status(500).json({ message: "Something went wrong in db", error: e });
     });
 });
 
@@ -102,11 +204,101 @@ app.post("/api/v1/slice", (req, res) => {
       video_length
     })
     .save(function(err) {
-      if (!err) console.log(job.id);
+      if (!err) console.log(`Job #${job.id} added in ${SLICE_REQUEST_QUEUE}`);
     });
 
   res.json("Hello World!");
 });
+
+const processQueueItem = (
+  { url, startAt, duration },
+  done,
+  createOrUpdate,
+  updateProps = null
+) => {
+  const { hostname } = urlParser.parse(url);
+
+  youtubedl.getInfo(url, ["--format=best"], function(err, info) {
+    if (err) throw err;
+
+    const sliceVideoFilename = `${info.title.replace(
+      /[^A-Z0-9]+/gi,
+      "_"
+    )}_${startAt}_${duration}.mp4`;
+
+    console.log(`\n---Starting up ${sliceVideoFilename}---`);
+
+    const slicedVideoPath = path.resolve(
+      __dirname,
+      "media",
+      sliceVideoFilename
+    );
+
+    ffmpeg(info.url)
+      .inputOptions([`-ss ${startAt}`, `-t ${duration}`])
+      .save(slicedVideoPath)
+      .on("error", console.error)
+      .on("progress", progress => {
+        readline.cursorTo(process.stdout, 0);
+        process.stdout.write(progress.timemark);
+      })
+      .on("end", () => {
+        console.log("\nSending it to the clouds! Please wait... ☁️");
+
+        const s3Key = `${hostname}/${sliceVideoFilename}`;
+
+        s3.putObject(
+          {
+            Body: fs.createReadStream(slicedVideoPath),
+            Bucket: s3Bucket,
+            Key: s3Key,
+            ContentDisposition: `inline; filename="${sliceVideoFilename.replace(
+              '"',
+              "'"
+            )}"`,
+            ContentType: "video/mp4"
+          },
+          error => {
+            if (error) {
+              revoke(error);
+              done(new Error(error));
+              console.log("\nErrored! ❌");
+              return;
+            }
+            console.log("\nSent! 🎉");
+            fs.unlinkSync(slicedVideoPath);
+            console.log("\nCleaned up! 🗑");
+
+            delete info.formats;
+            delete info.http_headers;
+
+            firestore
+              .collection(
+                createOrUpdate === "create" ? "klipps" : "moderated_klipps"
+              )
+              .doc(hash(url))
+              .set({
+                requested_web_url: url,
+                source_domain: hostname,
+                start_at: startAt,
+                status:
+                  createOrUpdate === "create"
+                    ? KLIPP_STATUS.UPLOADED
+                    : MODERATED_KLIPP_STATUS.APPROVED,
+                youtube_dl_info: info,
+                s3_key: s3Key
+              })
+              .then(docRef => {
+                done();
+              })
+              .catch(e => {
+                done(new Error(e));
+              });
+          }
+        );
+      });
+  });
+};
 
 if (cluster.isMaster) {
   kue.app.listen(3001);
@@ -115,6 +307,14 @@ if (cluster.isMaster) {
   }
   app.listen(port, () => console.log(`Klipply ready on port ${port}!`));
 } else {
+  queue.process(MODERATION_QUEUE, (job, done) => {
+    const { docRefId, url, slice_start, slice_end } = job.data;
+    const startAt = `00:00:${Math.floor(slice_start)}`;
+    const duration = `00:00:${Math.round(slice_end - slice_start)}`;
+
+    processQueueItem({ url, startAt, duration }, done, "update", { docRefId });
+  });
+
   queue.process(SLICE_REQUEST_QUEUE, (job, done) => {
     const { url, slice_at } = job.data;
 
@@ -126,81 +326,7 @@ if (cluster.isMaster) {
       .format("HH:mm:ss");
 
     const duration = "00:01:00";
-    const { hostname } = urlParser.parse(url);
-
-    youtubedl.getInfo(url, ["--format=best"], function(err, info) {
-      if (err) throw err;
-
-      const sliceVideoFilename = `${info.title.replace(
-        /[^A-Z0-9]+/gi,
-        "_"
-      )}_${startAt}_${duration}.mp4`;
-
-      console.log(`\n---Starting up ${sliceVideoFilename}---`);
-
-      const slicedVideoPath = path.resolve(
-        __dirname,
-        "media",
-        sliceVideoFilename
-      );
-
-      ffmpeg(info.url)
-        .inputOptions([`-ss ${startAt}`, `-t ${duration}`])
-        .save(slicedVideoPath)
-        .on("error", console.error)
-        .on("progress", progress => {
-          readline.cursorTo(process.stdout, 0);
-          process.stdout.write(progress.timemark);
-        })
-        .on("end", () => {
-          console.log("\nSending it to the clouds! Please wait... ☁️");
-
-          const s3Key = `${hostname}/${sliceVideoFilename}`;
-
-          s3.putObject(
-            {
-              Body: fs.createReadStream(slicedVideoPath),
-              Bucket: s3Bucket,
-              Key: s3Key,
-              ContentDisposition: `inline; filename="${sliceVideoFilename.replace(
-                '"',
-                "'"
-              )}"`,
-              ContentType: "video/mp4"
-            },
-            error => {
-              if (error) {
-                revoke(error);
-                done(new Error(error));
-                console.log("\nErrored! ❌");
-                return;
-              }
-              console.log("\nSent! 🎉");
-              fs.unlinkSync(slicedVideoPath);
-              console.log("\nCleaned up! 🗑");
-
-              firestore
-                .collection("klipps")
-                .doc(hash(job.data.url))
-                .set({
-                  source_domain: hostname,
-                  start_at: startAt,
-                  status: KLIPP_STATUS.UPLOADED,
-                  youtube_dl_info: info,
-                  s3_key: s3Key
-                })
-                .then(docRef => {
-                  // res.json({ message: 'Successfully added url', ackId: docRef.id });
-                  done();
-                })
-                .catch(e => {
-                  done(new Error(e));
-                  // res.status(500).json({ message: 'Something went wrong', error: e });
-                });
-            }
-          );
-        });
-    });
+    processQueueItem({ url, startAt, duration }, done, "create");
   });
 }
 
