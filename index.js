@@ -138,7 +138,7 @@ app.get("/api/v1/admin/klipps/pending_moderation", (req, res) => {
 
 app.get("/api/v1/slices", (req, res) => {
   firestore
-    .collection("klipps")
+    .collection("moderated_klipps")
     .get()
     .then(querySnapshot => {
       const s3Keys = [];
